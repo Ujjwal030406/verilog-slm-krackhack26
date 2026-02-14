@@ -1,15 +1,16 @@
 import os
+import re
 import torch
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+app = Flask(__name__, static_folder='static')
+CORS(app)
 
 # Model Configuration
 MODEL_NAME = "smolify/smolified-krackhack26verilog"
-DEVICE = "cpu"  # Force CPU — CUDA triggers device-side assert errors with this model
+DEVICE = "cpu"
 
 print(f"⚡ Sovereign AI System Initializing...")
 print(f"⚡ Device: {DEVICE}")
@@ -34,6 +35,10 @@ SYSTEM_PROMPT = (
     "Verilog practices."
 )
 
+@app.route('/')
+def serve_frontend():
+    return send_from_directory('.', 'index.html')
+
 @app.route('/generate', methods=['POST'])
 def generate_verilog():
     if not model or not tokenizer:
@@ -47,7 +52,6 @@ def generate_verilog():
 
     print(f"⚡ Received Prompt: {prompt}")
 
-    # Use the official chat template from the model card
     messages = [
         {'role': 'system', 'content': SYSTEM_PROMPT},
         {'role': 'user', 'content': prompt}
@@ -59,13 +63,11 @@ def generate_verilog():
             tokenize=False,
             add_generation_prompt=True,
         )
-        # Remove <bos> prefix as recommended by model card
         if text.startswith('<bos>'):
             text = text[len('<bos>'):]
 
         inputs = tokenizer(text, return_tensors="pt")
         input_len = inputs['input_ids'].shape[1]
-        print(f"DEBUG: Input length: {input_len} tokens")
 
         with torch.no_grad():
             output_ids = model.generate(
@@ -77,23 +79,16 @@ def generate_verilog():
                 pad_token_id=tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0,
             )
 
-        # Decode only the new tokens (skip the prompt)
         generated_ids = output_ids[0][input_len:]
-        print(f"DEBUG: Generated {len(generated_ids)} new tokens")
-        print(f"DEBUG: First 20 token IDs: {generated_ids[:20].tolist()}")
-
-        # Decode without special tokens
         generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
         generated_text = generated_text.strip()
 
-        # Post-processing: strip markdown code fences
-        import re
+        # Strip markdown code fences
         generated_text = re.sub(r'^```\w*\s*', '', generated_text)
         generated_text = re.sub(r'\s*```\s*$', '', generated_text)
         generated_text = generated_text.strip()
 
-        # Post-processing: format single-line Verilog into multi-line
-        # Insert newlines before key Verilog keywords
+        # Format single-line Verilog into multi-line
         keywords_newline_before = [
             'module', 'input', 'output', 'wire', 'reg', 'assign',
             'always', 'initial', 'begin', 'end', 'endmodule',
@@ -101,10 +96,9 @@ def generate_verilog():
             'localparam', 'genvar', 'generate', 'endgenerate'
         ]
         for kw in keywords_newline_before:
-            # Add newline before keyword if not already at start of line
             generated_text = re.sub(r'(?<!\n)\s+(' + kw + r'\b)', r'\n\1', generated_text)
 
-        # Add indentation for lines inside module
+        # Add indentation
         lines = generated_text.split('\n')
         formatted_lines = []
         indent_level = 0
@@ -112,18 +106,15 @@ def generate_verilog():
             line = line.strip()
             if not line:
                 continue
-            # Decrease indent for closing keywords
             if line.startswith('end') or line.startswith(');'):
                 indent_level = max(0, indent_level - 1)
             formatted_lines.append('  ' * indent_level + line)
-            # Increase indent for opening keywords
             if line.startswith('module') or line.startswith('begin') or line.startswith('always') or line.startswith('initial') or line.startswith('case') or line.startswith('generate'):
                 indent_level += 1
 
         generated_text = '\n'.join(formatted_lines)
 
         print("⚡ Generation Complete.")
-        print(f"⚡ Formatted Output:\n{generated_text}")
         return jsonify({"code": generated_text})
 
     except Exception as e:
@@ -133,4 +124,5 @@ def generate_verilog():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 7860))
+    app.run(host='0.0.0.0', port=port, debug=False)
