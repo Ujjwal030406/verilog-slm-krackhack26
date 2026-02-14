@@ -1,0 +1,8 @@
+flask
+flask-cors
+torch
+transformers
+accelerate
+Pillow>=10.0.0
+numpy<2.0
+scipy>=1.10.0
